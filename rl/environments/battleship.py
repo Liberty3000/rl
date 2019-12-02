@@ -11,15 +11,21 @@ entities = {
 }
 
 grid_size = (10,10)
+
 stochastic_policy = lambda:np.random.randint(np.prod(grid_size))
 
 class Battleship(gym.Env):
-    def __init__(self,):
+    def __init__(self, opponent_type='stochastic', fool_me_twice=False):
+        self.opponent_type = opponent_type
+        self.fool_me_twice = fool_me_twice
         self.reset()
 
     def reset(self):
-        self.metadata = {}
+        self.timer = 0
         self.action_space = grid_size
+        self.n_action = np.prod(grid_size)
+        self.actions = range(self.n_action)
+        self.metadata = dict(legal_actions=self.actions)
 
         self.friends, self.positives = self.initialize_entities(grid_size)
         self.friends_init = self.friends.copy()
@@ -95,88 +101,108 @@ class Battleship(gym.Env):
     def sunken(self, coords, attacks):
         return all([coord in attacks for coord in coords])
 
+    def legal_actions(self, history):
+        actions = range(np.prod(grid_size))
+        return [a for a in actions if not np.unravel_index(a, grid_size) in history]
+
     def step(self, action, verbose=False):
         self.friends_action = np.unravel_index(action, grid_size)
         self.enemies, reward, terminal, label = self.calculate_damage(
         self.friends_action, self.enemies, self.negatives, self.friends_attack_history)
         self.friends_attack_history.append(self.friends_action)
+        self.metadata['legal_actions'] = self.legal_actions(self.friends_attack_history)
+        if self.fool_me_twice: self.metadata['legal_actions'] = self.actions
         self.metadata['friends_attack'] = label
         if terminal:
             self.metadata['status'] = 'success'
             return self.enemies, reward, terminal, self.metadata
 
-        self.enemies_action = np.unravel_index(stochastic_policy(), grid_size)
+        if self.opponent_type == 'stochastic':
+            output = np.random.choice(self.metadata['enemies_legal_actions'])
+        if self.opponent_type == 'linear':
+            output = self.timer
+        if self.opponent_type == 'heuristic':
+            output = stochastic_policy()
+
+        self.enemies_action = np.unravel_index(output, grid_size)
         self.friends,penalty, terminal, label = self.calculate_damage(
         self.enemies_action, self.friends, self.positives, self.enemies_attack_history)
         self.enemies_attack_history.append(self.enemies_action)
+        self.metadata['enemies_legal_actions'] = self.legal_actions(self.enemies_attack_history)
+        if self.fool_me_twice: self.metadata['enemies_legal_actions'] = self.actions
         self.metadata['enemies_attack'] = label
         if terminal:
             self.metadata['status'] = 'failure'
             return self.enemies, reward, terminal, self.metadata
 
+
         self.metadata['status'] = 'neutral'
         obs = self.encode_observation(self.friends_attack_history, self.negatives)
+        self.timer += 1
         return obs, reward, terminal, self.metadata
 
-    def render(self):
+    def render(self, verbose=False):
         banner = '\n\t{}player {} @ {} | {}\n'
         statuses = {False:'AFLOAT',True:'SUNKEN'}
         fig,((ax1,ax2,ax3,ax4),(ax5,ax6,ax7,ax8)) = mp.subplots(2,4, figsize=(17,7))
 
-        if len(self.friends_attack_history) > 0:
-            print('_' * 80, banner.format('🔵', 1, self.friends_attack_history[-1], self.metadata['friends_attack']))
-            for k,v in self.negatives.items():
-                status = statuses[self.sunken(v, self.friends_attack_history)]
-                print('{:10}|{}|'.format(k, status), v)
-            print('_' * 80)
-        if len(self.enemies_attack_history) > 0:
-            print('_' * 80, banner.format('🔴', 2, self.enemies_attack_history[-1], self.metadata['enemies_attack']))
-            for k,v in self.positives.items():
-                status = statuses[self.sunken(v, self.enemies_attack_history)]
-                print('{:10}|{}|'.format(k, status), v)
-            print('_' * 80)
+        if verbose:
+            if len(self.friends_attack_history) > 0:
+                print('_' * 80, banner.format('🔵', 1, self.friends_attack_history[-1], self.metadata['friends_attack']))
+                for k,v in self.negatives.items():
+                    status = statuses[self.sunken(v, self.friends_attack_history)]
+                    print('{:10}|{}|'.format(k, status), v)
+                print('_' * 80)
+            if len(self.enemies_attack_history) > 0:
+                print('_' * 80, banner.format('🔴', 2, self.enemies_attack_history[-1], self.metadata['enemies_attack']))
+                for k,v in self.positives.items():
+                    status = statuses[self.sunken(v, self.enemies_attack_history)]
+                    print('{:10}|{}|'.format(k, status), v)
+                print('_' * 80)
 
         ax1.set_title('Where We Attacked')
         ax2.set_title('What We Know')
         ax3.set_title('Where They Are')
         ax4.set_title('Where They Began')
-        friends_obs = self.encode_observation(self.friends_attack_history, self.negatives)
-        friends_recent = np.zeros(grid_size)
-        friends_recent[self.friends_action] = 1
-        ax1.imshow(friends_recent, cmap='Reds')
-        ax2.imshow(friends_obs, cmap='Reds')
-        ax3.imshow(self.enemies, cmap='OrRd')
-        ax4.imshow(self.enemies_init, cmap='OrRd')
 
         ax5.set_title('Where They Attacked')
         ax6.set_title('What They Know')
         ax7.set_title('Where We Are')
         ax8.set_title('Where We Began')
+
+        friends_obs = self.encode_observation(self.friends_attack_history, self.negatives)
+        friends_recent = np.zeros(grid_size)
+        friends_recent[self.friends_action] = 1
+        ax1.imshow(friends_recent, cmap='Reds')
+        ax2.imshow(friends_obs, cmap='hot')
+        ax3.imshow(self.enemies, cmap='OrRd')
+        ax4.imshow(self.enemies_init, cmap='OrRd')
+
         enemies_obs = self.encode_observation(self.enemies_attack_history, self.positives)
         enemies_recent = np.zeros(grid_size)
         enemies_recent[self.enemies_action] = 1
-        ax5.imshow(enemies_recent, cmap='Reds')
-        ax6.imshow(enemies_obs, cmap='Blues')
+        ax5.imshow(enemies_recent, cmap='Blues')
+        ax6.imshow(enemies_obs, cmap='winter')
         ax7.imshow(self.friends, cmap='BuPu')
         ax8.imshow(self.friends_init, cmap='BuPu')
 
-        for i in range(10):
-            ax1.plot([i]*10,range(10), color='blue')
-            ax1.plot(range(10),[i]*10, color='blue')
-            ax2.plot([i]*10,range(10), color='red')
-            ax2.plot(range(10),[i]*10, color='red')
-            ax3.plot([i]*10,range(10), color='black')
-            ax3.plot(range(10),[i]*10, color='black')
-            ax4.plot([i]*10,range(10), color='red')
-            ax4.plot(range(10),[i]*10, color='red')
-            ax5.plot([i]*10,range(10), color='blue')
-            ax5.plot(range(10),[i]*10, color='blue')
-            ax6.plot([i]*10,range(10), color='black')
-            ax6.plot(range(10),[i]*10, color='black')
-            ax7.plot([i]*10,range(10), color='blue')
-            ax7.plot(range(10),[i]*10, color='blue')
-            ax8.plot([i]*10,range(10), color='blue')
-            ax8.plot(range(10),[i]*10, color='blue')
+        for i in range(0,10):
+            ax1.plot([i+.5]*10,range(10), color='blue')
+            ax1.plot(range(10),[i+.5]*10, color='blue')
+            ax2.plot([i+.5]*10,range(10), color='red')
+            ax2.plot(range(10),[i+.5]*10, color='red')
+            ax3.plot([i+.5]*10,range(10), color='black')
+            ax3.plot(range(10),[i+.5]*10, color='black')
+            ax4.plot([i+.5]*10,range(10), color='black')
+            ax4.plot(range(10),[i+.5]*10, color='black')
+            ax5.plot([i+.5]*10,range(10), color='red')
+            ax5.plot(range(10),[i+.5]*10, color='red')
+            ax6.plot([i+.5]*10,range(10), color='black')
+            ax6.plot(range(10),[i+.5]*10, color='black')
+            ax7.plot([i+.5]*10,range(10), color='blue')
+            ax7.plot(range(10),[i+.5]*10, color='blue')
+            ax8.plot([i+.5]*10,range(10), color='blue')
+            ax8.plot(range(10),[i+.5]*10, color='blue')
 
         ax1.set_xticks([]),ax1.set_yticks([])
         ax2.set_xticks([]),ax2.set_yticks([])
@@ -187,4 +213,5 @@ class Battleship(gym.Env):
         ax7.set_xticks([]),ax7.set_yticks([])
         ax8.set_xticks([]),ax8.set_yticks([])
 
+        mp.tight_layout()
         mp.show()
