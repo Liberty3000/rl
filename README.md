@@ -9,3 +9,8 @@
 <p align="center">
   <img align="center" src="https://github.com/Liberty3000/rl/blob/master/graphics/dark_chess.gif" width="300"/>
 </p>
+
+### BoxWorld
+<p align="center">
+  <img align="center" src="https://github.com/Liberty3000/rl/blob/master/graphics/box_world.gif" width="450"/>
+</p>
